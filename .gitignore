@@ -9,4 +9,5 @@ data/raw/*.db-journal
 logs/
 data/processed/
 models/*.joblib
+reports/
 
