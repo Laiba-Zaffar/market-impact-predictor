@@ -2,3 +2,9 @@ requests==2.32.3
 python-dotenv==1.0.1
 yfinance==1.7.0
 pytest==9.1.1
+pandas==3.0.6
+joblib==1.6.0
+# scikit-learn and matplotlib are needed for train_baseline.py/calibrate.py
+# but aren't pinned yet - repeated network stalls on this machine blocked
+# installing them (see README). Install manually once that clears:
+#   pip install scikit-learn matplotlib

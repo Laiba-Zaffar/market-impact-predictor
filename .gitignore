@@ -7,3 +7,6 @@ data/raw/*.db-journal
 .env
 .quota_state.json
 logs/
+data/processed/
+models/*.joblib
+
