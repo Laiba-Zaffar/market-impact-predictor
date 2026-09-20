@@ -33,6 +33,18 @@ CREATE TABLE IF NOT EXISTS fetch_log (
     item_count INTEGER NOT NULL,
     UNIQUE(batch_key, month_key)
 );
+
+CREATE TABLE IF NOT EXISTS prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    date TEXT NOT NULL,
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    volume INTEGER,
+    UNIQUE(ticker, date)
+);
 """
 
 
@@ -79,3 +91,18 @@ def mark_window_fetched(conn: sqlite3.Connection, batch_key: str, month_key: str
            VALUES (?, ?, ?, ?)""",
         (batch_key, month_key, fetched_at, item_count),
     )
+
+
+def insert_price(conn: sqlite3.Connection, row: dict) -> None:
+    conn.execute(
+        """INSERT OR IGNORE INTO prices (ticker, date, open, high, low, close, volume)
+           VALUES (:ticker, :date, :open, :high, :low, :close, :volume)""",
+        row,
+    )
+
+
+def get_prices(conn: sqlite3.Connection, ticker: str) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    return conn.execute(
+        "SELECT date, close FROM prices WHERE ticker = ? ORDER BY date ASC", (ticker,)
+    ).fetchall()
