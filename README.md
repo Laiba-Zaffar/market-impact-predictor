@@ -11,7 +11,7 @@ happens *after* you start running it, never what happened before.
 - [x] M0 — repo scaffold
 - [ ] M1 — historical news+sentiment ingestion (Alpha Vantage, quota-aware)
 - [x] M2a — historical price data (yfinance, 14mo × 21 tickers)
-- [ ] M2b — price alignment → forward-return labels
+- [x] M2b — price alignment → forward-return labels
 - [ ] M3 — dataset construction (time-based split, no lookahead leakage)
 - [ ] M4 — baseline model: direction classifier + magnitude regressor
 - [ ] M5 — confidence calibration (temperature scaling / isotonic regression)
