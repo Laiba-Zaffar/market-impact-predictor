@@ -6,3 +6,4 @@ data/raw/*.db
 data/raw/*.db-journal
 .env
 .quota_state.json
+logs/
