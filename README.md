@@ -16,9 +16,9 @@ happens *after* you start running it, never what happened before.
   Redesigned around single-ticker calls once caught. ([details](#m1-lesson-verify-api-semantics-before-designing-around-them))
 - **Every stage refuses to produce a misleading number on too little
   data**, rather than reporting a number that looks like a result but
-  isn't one. M4 trained on 15 examples and got a majority-class
-  collapse (expected, and said so); M5 and M6 declined to run at all,
-  explicitly, below a 30-example floor.
+  isn't one - verified on 15 examples (correctly refused to evaluate)
+  and again on 31,230 (finally produced a real, honest result: the
+  baseline doesn't beat buy-and-hold yet, see below).
 - **Time-based train/test split, not random** — a random split on
   time-series financial data lets the model implicitly train on
   information from the future relative to a test example, which makes
@@ -95,13 +95,13 @@ metrics are for.
 ## Roadmap
 
 - [x] M0 — repo scaffold
-- [~] M1 — historical news+sentiment ingestion (Alpha Vantage, quota-aware) — in progress via daily cron, a few more days to finish the 1-year backfill
+- [~] M1 — historical news+sentiment ingestion (Alpha Vantage, quota-aware) — 6 of 21 tickers done (19,192 articles), rest still backfilling
 - [x] M2a — historical price data (yfinance, 14mo × 21 tickers)
 - [x] M2b — price alignment → forward-return labels
 - [x] M3 — dataset construction (time-based split, no lookahead leakage)
-- [x] M4 — baseline model: direction classifier + magnitude regressor
-- [x] M5 — confidence calibration (Brier score + reliability curve)
-- [x] M6 — backtest evaluation (with honest limitations, not a hype number)
+- [x] M4 — baseline model — real result on 31,230 examples: doesn't beat the base rate yet (see below)
+- [x] M5 — confidence calibration — real result: minimal improvement, consistent with M4's weak-signal finding
+- [x] M6 — backtest evaluation — real result: underperforms buy-and-hold (35.07 vs 38.06)
 - [x] M7 — portfolio polish (tests, README, this list)
 
 ## Engineering notes
@@ -155,7 +155,7 @@ the EST/EDT transition (off by up to an hour part of the year) - a
 documented simplification, not a rigorous market-calendar implementation
 (that would mean pulling in something like `pandas_market_calendars`).
 
-### M4-M6: ran end-to-end, but on far too little data to mean anything yet
+### M4-M6, first run: too little data, and the pipeline said so
 
 `scikit-learn` stalled four times installing on this machine (connection
 established, then zero data movement for minutes) before finally
@@ -168,25 +168,70 @@ existed at that point:
   0.000 - the confusion matrix shows it predicted "down" for every
   single example. Not a bug: the model correctly found no real signal
   in 15 points and fell back to the majority class (10 of 15 were
-  actually down). Expected to keep happening until there's real volume.
+  actually down).
 - **Calibration (M5)** and **backtest (M6)** both correctly refused to
   run at all - 15 examples is below the 30-example minimum guard built
   into both, and each prints an explicit message saying so.
 
-This is the pipeline working exactly as designed - built to be honest
-about when it doesn't have enough to say anything, not to produce a
-plausible-looking number regardless of sample size. Re-running
-`python -m src.run_pipeline` once the backfill has real volume produces
-a real evaluation with no code changes needed - the guardrails were
-never about blocking progress, just about not confusing "the code ran"
-with "the result means something."
+This confirmed the pipeline works exactly as designed - honest about
+having too little data to say anything, rather than producing a
+plausible-looking number regardless of sample size.
 
-When M5 does run, it saves a reliability diagram (`reports/reliability_diagram.png`)
-plotting predicted probability against observed frequency for both the
-raw and calibrated model against the perfect-calibration diagonal -
-added during M7 polish after noticing `matplotlib` was installed but
-never actually used anywhere, which is exactly the kind of
-listed-but-dead dependency that looks sloppy on a second look.
+### M4-M6, the real run: 31,230 examples, and an honest negative result
+
+The cron job set up to run the backfill daily never actually fired - the
+laptop's boot log showed it powered on at 12:55pm, well after the 6am
+scheduled time. Plain `cron` doesn't catch up on missed runs; it just
+waits for the next scheduled time, which meant the "daily" backfill had
+only run twice, both by hand during setup, not automatically overnight.
+
+Running it manually once the day's quota had genuinely reset produced a
+real surprise: every single API call returned the full 1,000-article cap.
+Real per-ticker news volume is far higher than the ~150/quarter estimated
+from one early test - one day's 23 calls (6 of 21 tickers) pulled in
+19,192 articles and 62,511 ticker-sentiment pairs, versus the handful
+that existed before.
+
+That volume immediately exposed a real performance bug: `build_dataset()`
+was calling `get_prices()` fresh for every row instead of once per
+ticker, so 62k rows meant 62k separate database queries. It had been
+fine at 15 rows and invisible until there was enough data to hurt -
+caching each ticker's price series once and reusing it across its rows
+took the build from "still running after several minutes" to 6.3 seconds.
+
+With that fixed, `python -m src.run_pipeline` produced the first
+real evaluation - 24,984 training examples, 6,246 held out for testing:
+
+- **Direction classifier**: accuracy 0.565, recall 1.000, precision
+  0.565 - the confusion matrix shows it predicted "up" for every single
+  test example. Same majority-class collapse as the 15-example run, just
+  the opposite direction (56.5% of this test period was actually "up") -
+  with real volume behind it now, this is a genuine, not-yet-encouraging
+  finding: three sentiment-only features don't carry enough linear
+  signal to beat the base rate.
+- **Calibration (M5)**: Brier score barely moved, 0.2460 → 0.2459.
+  Consistent with M4's finding - calibration corrects a *miscalibrated*
+  signal, and there's not much real signal here to correct.
+- **Backtest (M6)**: strategy cumulative return 35.07 vs. buy-and-hold's
+  38.06 on the same test examples. The strategy underperformed simply
+  holding - trading on a weak, mostly-one-directional signal added noise
+  without adding edge.
+
+This is not the result I'd have picked to headline, and that's exactly
+why it's the one worth keeping in the README rather than a cherry-picked
+one. It's also a completely legitimate, expected place for a first
+baseline to land: three off-the-shelf sentiment scores were never
+guaranteed to contain a real trading signal, and now there's honest
+evidence they mostly don't - not a guess, an actual measurement on 31k
+examples with correct methodology behind it. That's precisely the
+evidence needed to justify the next real investment (richer features,
+starting with Project 1's own NER/event-classification output) instead
+of shipping a baseline no one checked.
+
+`reports/reliability_diagram.png` (from M5) plots predicted probability
+against observed frequency for both the raw and calibrated model against
+the perfect-calibration diagonal - added during M7 polish after noticing
+`matplotlib` was installed but never actually used anywhere.
 
 ### Known limitations, stated plainly
 
@@ -200,7 +245,20 @@ listed-but-dead dependency that looks sloppy on a second look.
 - **Backtest has no transaction costs, slippage, or position sizing** -
   printed explicitly alongside every backtest run so the numbers are
   never read in isolation from that context.
-- **Confidence isn't validated against ground truth yet** - calibration
-  code exists and is tested, but hasn't run on enough real data to say
-  anything about whether this system's confidence scores are actually
-  trustworthy. That's an open question, not a solved one.
+- **Every quarterly news query hit Alpha Vantage's 1,000-article cap** -
+  real volume per ticker is higher than that, and the fetch uses
+  `sort=EARLIEST`, so each quarter's *later* articles for high-volume
+  tickers are systematically missing, not randomly. A truer fetch would
+  detect the cap being hit and split that window into smaller ones.
+- **Confidence looks roughly reasonable but hasn't been rigorously
+  checked** - the Brier score barely changed with calibration (0.2460 →
+  0.2459), consistent with a model that doesn't have much real signal to
+  calibrate in the first place. Worth re-checking once feature quality
+  improves, not currently a claim that confidence is trustworthy.
+- **The daily cron backfill silently never fired** - scheduled for 6am,
+  but the laptop was off/asleep then, and plain `cron` doesn't catch up
+  missed runs. Found via the boot log, not a smoking gun - worth moving
+  to a trigger that survives a personal laptop's actual usage pattern
+  (e.g. a systemd timer with `Persistent=true`, which runs a missed job
+  as soon as the machine wakes) rather than assuming a laptop behaves
+  like an always-on server.
