@@ -233,6 +233,49 @@ against observed frequency for both the raw and calibrated model against
 the perfect-calibration diagonal - added during M7 polish after noticing
 `matplotlib` was installed but never actually used anywhere.
 
+### First improvement pass: fixed a real failure mode, didn't fix accuracy
+
+`src/model/train_improved.py` tests three changes against the baseline,
+all using data already collected - feature scaling, `ticker` added as a
+one-hot feature, class balancing, and a non-linear model
+(`HistGradientBoosting`) - to see whether any of them turn the baseline's
+weak result into a real one. Honest outcome, not the one I'd have picked
+to headline:
+
+| Config | Accuracy | F1 | What actually happened |
+|---|---|---|---|
+| Baseline (3 features, no scaling) | 0.565 | 0.722 | Predicted "up" for every single example - the accuracy number is just the base rate |
+| + scaling + ticker | 0.554 | 0.664 | Real variation for the first time - both false negatives *and* true negatives are nonzero |
+| + `class_weight="balanced"` | 0.457 | 0.495 | Worse than the base rate - forcing balance on a weak signal just adds noise |
+| HistGradientBoosting instead | 0.545 | 0.657 | Statistically indistinguishable from plain logistic regression |
+
+Raw accuracy technically *dropped* (0.565 → 0.554) - but the baseline's
+0.565 came from a model that had stopped trying, predicting one class
+regardless of input. The scaled+ticker version is the first one that's
+actually discriminating between examples, which matters more than the
+accuracy digit even though it's a less impressive-looking number.
+
+Two things worth being able to say plainly, not just the numbers:
+- **Class balancing is not automatically a good idea.** It's a common
+  reflex fix for imbalanced data, and here it made results worse - with
+  genuinely weak signal, forcing the classifier to split evenly just
+  means it's guessing more symmetrically, not guessing better.
+- **A stronger model did not fix a weak feature set.** Gradient boosting
+  performed the same as logistic regression on the same 3 features. That's
+  real evidence the bottleneck is the *information content* of the
+  features, not the model's capacity to use them - which means the next
+  real improvement is better features (Alpha Vantage's `topics` field is
+  fetched and currently discarded; Project 1's own NER/event
+  classification is unused here too), not a bigger model on the same
+  three numbers.
+
+Saved as `models/*_v2.joblib`, deliberately not overwriting the
+production `direction_classifier.joblib` / `magnitude_regressor.joblib`
+that `calibrate.py` and `backtest.py` load - this pipeline expects a
+`ticker` column those don't pass yet, so wiring it in is a real next
+step, not something to do silently as a side effect of running a
+comparison script.
+
 ### Known limitations, stated plainly
 
 - **Small, hand-picked ticker universe** (21 large, liquid, currently
