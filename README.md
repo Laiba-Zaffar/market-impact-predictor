@@ -276,6 +276,31 @@ that `calibrate.py` and `backtest.py` load - this pipeline expects a
 step, not something to do silently as a side effect of running a
 comparison script.
 
+### Second improvement pass: better features, not built yet tested
+
+The first pass showed the bottleneck was feature information, not model
+choice - so the next lever is Alpha Vantage's `topics` field (earnings,
+M&A, macro, etc. per article), which was being fetched in every API
+response and thrown away. Added:
+
+- An `article_topics` table and the fetch code to actually store it.
+- `topic_features_for()` in `build_dataset.py` - a pure function pivoting
+  each article's topics into a fixed 15-column feature vector (one per
+  Alpha Vantage topic category, 0.0 where absent), tested in isolation.
+- Those 15 columns wired into `train_improved.py`'s feature set.
+
+**This is shipped but not yet validated with real data.** Topic capture
+only applies to articles fetched *after* this change - all 31,230
+existing examples predate it, so every topic column is currently a
+constant 0.0 for the whole dataset (confirmed: results with the new
+columns are statistically identical to without them, exactly as
+expected from adding constant features). Today's API quota was already
+spent on the earlier backfill, so there wasn't a way to fetch new,
+topic-tagged data to actually test the hypothesis yet. Tomorrow's
+backfill run will produce the first articles with real topic data -
+re-running `python -m src.model.train_improved` at that point is what
+actually answers whether this feature helps, not this commit.
+
 ### Known limitations, stated plainly
 
 - **Small, hand-picked ticker universe** (21 large, liquid, currently

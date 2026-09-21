@@ -6,10 +6,30 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from src.features.labels import compute_label_from_series
-from src.storage.db import get_connection, get_prices
+from src.storage.db import get_all_article_topics, get_connection, get_prices
 
 HORIZON_DAYS = 3
 OUTPUT_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "dataset.csv"
+
+# Alpha Vantage's fixed topic vocabulary. Hardcoded rather than discovered
+# from whatever's in the DB at build time, so the feature schema stays
+# stable across runs - a saved model needs to know exactly which columns
+# to expect, not "whichever topics happened to show up so far."
+TOPIC_CATEGORIES = [
+    "blockchain", "earnings", "ipo", "mergers_and_acquisitions",
+    "financial_markets", "economy_fiscal", "economy_monetary", "economy_macro",
+    "energy_transportation", "finance", "life_sciences", "manufacturing",
+    "real_estate", "retail_wholesale", "technology",
+]
+TOPIC_FEATURES = [f"topic_{t}" for t in TOPIC_CATEGORIES]
+
+
+def topic_features_for(article_topics: dict[str, float]) -> dict[str, float]:
+    """Pivot a {topic: relevance_score} dict (only the topics an article
+    actually had) into a fixed-width feature dict covering every known
+    category, 0.0 where absent. A pure function so the pivoting logic is
+    testable without a database."""
+    return {f"topic_{t}": article_topics.get(t, 0.0) for t in TOPIC_CATEGORIES}
 
 
 def build_dataset(horizon_days: int = HORIZON_DAYS) -> pd.DataFrame:
@@ -37,8 +57,14 @@ def build_dataset(horizon_days: int = HORIZON_DAYS) -> pd.DataFrame:
             )
         return price_series_cache[ticker]
 
+    # One query for every article's topics, not one per row - same fix as
+    # the price-series cache above, applied before it became a problem
+    # this time instead of after.
+    topics_by_article = get_all_article_topics(conn)
+
     records = []
     skipped = 0
+    articles_with_topics = 0
     for article_id, time_published, overall_sentiment, ticker, relevance, ticker_sentiment in rows:
         dates, closes = get_series(ticker)
         label = compute_label_from_series(dates, closes, time_published, horizon_days)
@@ -48,6 +74,12 @@ def build_dataset(horizon_days: int = HORIZON_DAYS) -> pd.DataFrame:
             # as a training example yet.
             skipped += 1
             continue
+
+        article_topics = topics_by_article.get(article_id, {})
+        if article_topics:
+            articles_with_topics += 1
+        topic_features = topic_features_for(article_topics)
+
         records.append(
             {
                 "article_id": article_id,
@@ -56,6 +88,7 @@ def build_dataset(horizon_days: int = HORIZON_DAYS) -> pd.DataFrame:
                 "overall_sentiment_score": overall_sentiment,
                 "relevance_score": relevance,
                 "ticker_sentiment_score": ticker_sentiment,
+                **topic_features,
                 **label,
             }
         )
@@ -63,6 +96,7 @@ def build_dataset(horizon_days: int = HORIZON_DAYS) -> pd.DataFrame:
 
     df = pd.DataFrame(records)
     print(f"Built {len(df)} labeled examples ({skipped} skipped - not enough price history around them).")
+    print(f"{articles_with_topics}/{len(df)} examples have real topic data (older articles predate this feature).")
     return df
 
 

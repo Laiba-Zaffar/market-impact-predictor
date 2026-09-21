@@ -5,7 +5,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
-from src.features.build_dataset import time_based_split
+from src.features.build_dataset import TOPIC_CATEGORIES, time_based_split, topic_features_for
 
 
 def make_df(n: int) -> pd.DataFrame:
@@ -33,3 +33,21 @@ def test_split_covers_the_whole_dataset():
     df = make_df(7)
     train, test = time_based_split(df, test_frac=0.3)
     assert len(train) + len(test) == len(df)
+
+
+def test_topic_features_covers_every_known_category():
+    features = topic_features_for({"earnings": 0.8})
+    assert set(features.keys()) == {f"topic_{t}" for t in TOPIC_CATEGORIES}
+
+
+def test_topic_features_defaults_absent_topics_to_zero():
+    features = topic_features_for({"earnings": 0.8})
+    assert features["topic_earnings"] == 0.8
+    assert features["topic_technology"] == 0.0
+
+
+def test_topic_features_handles_no_topics_at_all():
+    # An older article with no topic data captured - every feature is 0.0,
+    # not missing/NaN, so the model sees "no signal" rather than a hole.
+    features = topic_features_for({})
+    assert all(v == 0.0 for v in features.values())

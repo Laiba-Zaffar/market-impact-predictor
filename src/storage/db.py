@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS prices (
     volume INTEGER,
     UNIQUE(ticker, date)
 );
+
+CREATE TABLE IF NOT EXISTS article_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    article_id INTEGER NOT NULL REFERENCES articles(id),
+    topic TEXT NOT NULL,
+    relevance_score REAL NOT NULL,
+    UNIQUE(article_id, topic)
+);
 """
 
 
@@ -106,3 +114,23 @@ def get_prices(conn: sqlite3.Connection, ticker: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT date, close FROM prices WHERE ticker = ? ORDER BY date ASC", (ticker,)
     ).fetchall()
+
+
+def insert_article_topic(conn: sqlite3.Connection, row: dict) -> None:
+    conn.execute(
+        """INSERT OR IGNORE INTO article_topics (article_id, topic, relevance_score)
+           VALUES (:article_id, :topic, :relevance_score)""",
+        row,
+    )
+
+
+def get_all_article_topics(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
+    """All (article_id -> {topic: relevance_score}) in one query, not one
+    per article - same N+1 mistake as the price-lookup bug, avoided this
+    time by fetching everything up front."""
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT article_id, topic, relevance_score FROM article_topics").fetchall()
+    result: dict[int, dict[str, float]] = {}
+    for row in rows:
+        result.setdefault(row["article_id"], {})[row["topic"]] = row["relevance_score"]
+    return result

@@ -41,10 +41,15 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from src.features.build_dataset import build_dataset, time_based_split
+from src.features.build_dataset import TOPIC_FEATURES, build_dataset, time_based_split
 from src.model.config import MIN_EXAMPLES_FOR_SPLIT, MODELS_DIR
 
-NUMERIC_FEATURES = ["overall_sentiment_score", "relevance_score", "ticker_sentiment_score"]
+# Topic features only carry real information for articles fetched after
+# topic capture was added - older rows have every topic column at a
+# constant 0.0. Including them here is safe either way (a constant
+# column just gets a ~zero coefficient), but won't visibly change
+# results until enough new, topic-tagged data exists.
+NUMERIC_FEATURES = ["overall_sentiment_score", "relevance_score", "ticker_sentiment_score"] + TOPIC_FEATURES
 CATEGORICAL_FEATURES = ["ticker"]
 ALL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 

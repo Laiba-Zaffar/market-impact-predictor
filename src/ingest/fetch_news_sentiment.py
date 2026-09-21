@@ -14,6 +14,7 @@ from src.ingest.quota import calls_remaining, is_rate_limit_response, record_cal
 from src.storage.db import (
     get_connection,
     insert_article,
+    insert_article_topic,
     insert_ticker_sentiment,
     is_window_fetched,
     mark_window_fetched,
@@ -93,6 +94,15 @@ def store_feed(conn, feed: list[dict]) -> int:
                     "relevance_score": float(ts["relevance_score"]),
                     "ticker_sentiment_score": float(ts["ticker_sentiment_score"]),
                     "ticker_sentiment_label": ts["ticker_sentiment_label"],
+                },
+            )
+        for topic in item.get("topics", []):
+            insert_article_topic(
+                conn,
+                {
+                    "article_id": article_id,
+                    "topic": topic["topic"],
+                    "relevance_score": float(topic["relevance_score"]),
                 },
             )
     return stored
