@@ -5,8 +5,8 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-from src.features.labels import compute_label
-from src.storage.db import get_connection
+from src.features.labels import compute_label_from_series
+from src.storage.db import get_connection, get_prices
 
 HORIZON_DAYS = 3
 OUTPUT_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "dataset.csv"
@@ -22,10 +22,26 @@ def build_dataset(horizon_days: int = HORIZON_DAYS) -> pd.DataFrame:
            ORDER BY a.time_published"""
     ).fetchall()
 
+    # Cache each ticker's price series once instead of re-querying the DB
+    # per row - with tens of thousands of articles, a fresh query per row
+    # turned this into the dominant cost. There are only as many distinct
+    # series to cache as there are tickers, not as many as there are rows.
+    price_series_cache: dict[str, tuple[list[str], list[float]]] = {}
+
+    def get_series(ticker: str) -> tuple[list[str], list[float]]:
+        if ticker not in price_series_cache:
+            price_rows = get_prices(conn, ticker)
+            price_series_cache[ticker] = (
+                [r["date"] for r in price_rows],
+                [r["close"] for r in price_rows],
+            )
+        return price_series_cache[ticker]
+
     records = []
     skipped = 0
     for article_id, time_published, overall_sentiment, ticker, relevance, ticker_sentiment in rows:
-        label = compute_label(conn, ticker, time_published, horizon_days)
+        dates, closes = get_series(ticker)
+        label = compute_label_from_series(dates, closes, time_published, horizon_days)
         if label is None:
             # Article too recent (not enough future trading days yet) or
             # predates our price history - not an error, just not usable
