@@ -95,7 +95,7 @@ metrics are for.
 ## Roadmap
 
 - [x] M0 — repo scaffold
-- [~] M1 — historical news+sentiment ingestion (Alpha Vantage, quota-aware) — 6 of 21 tickers done (19,192 articles), rest still backfilling
+- [~] M1 — historical news+sentiment ingestion (Alpha Vantage, quota-aware) — 11 of 21 tickers done (38,507 articles), rest still backfilling
 - [x] M2a — historical price data (yfinance, 14mo × 21 tickers)
 - [x] M2b — price alignment → forward-return labels
 - [x] M3 — dataset construction (time-based split, no lookahead leakage)
@@ -276,12 +276,12 @@ that `calibrate.py` and `backtest.py` load - this pipeline expects a
 step, not something to do silently as a side effect of running a
 comparison script.
 
-### Second improvement pass: better features, not built yet tested
+### Second improvement pass: real topic data, and a second honest negative result
 
 The first pass showed the bottleneck was feature information, not model
-choice - so the next lever is Alpha Vantage's `topics` field (earnings,
-M&A, macro, etc. per article), which was being fetched in every API
-response and thrown away. Added:
+choice - so the next lever tried was Alpha Vantage's `topics` field
+(earnings, M&A, macro, etc. per article), which was being fetched in
+every API response and thrown away. Added:
 
 - An `article_topics` table and the fetch code to actually store it.
 - `topic_features_for()` in `build_dataset.py` - a pure function pivoting
@@ -289,17 +289,44 @@ response and thrown away. Added:
   Alpha Vantage topic category, 0.0 where absent), tested in isolation.
 - Those 15 columns wired into `train_improved.py`'s feature set.
 
-**This is shipped but not yet validated with real data.** Topic capture
-only applies to articles fetched *after* this change - all 31,230
-existing examples predate it, so every topic column is currently a
-constant 0.0 for the whole dataset (confirmed: results with the new
-columns are statistically identical to without them, exactly as
-expected from adding constant features). Today's API quota was already
-spent on the earlier backfill, so there wasn't a way to fetch new,
-topic-tagged data to actually test the hypothesis yet. Tomorrow's
-backfill run will produce the first articles with real topic data -
-re-running `python -m src.model.train_improved` at that point is what
-actually answers whether this feature helps, not this commit.
+That shipped before there was real (non-constant) topic data to test it
+against. A further backfill (11 of 21 tickers now covered, 38,507
+articles, 55,532 labeled examples - up from 31,230) produced 24,302
+examples with real topic tags, enough to actually answer the question.
+
+**The answer is no - and it's worse than "no improvement."** None of
+the three trained configs beat a trivial "always predict the majority
+class" baseline (0.564 accuracy / 0.721 F1) on this larger dataset:
+
+| Config | Accuracy | F1 |
+|---|---|---|
+| Trivial majority-class baseline | 0.564 | 0.721 |
+| Logistic + scaling + ticker + topics | 0.485 | 0.584 |
+| + `class_weight="balanced"` | 0.459 | 0.510 |
+| HistGradientBoosting + topics | 0.500 | 0.600 |
+
+Splitting the test set by whether an example actually has real topic
+data (vs. the old constant-zero rows) makes it clearer that topics
+specifically aren't helping, not just diluted by old rows: the
+HistGradientBoosting model scores 0.467 accuracy against a 0.558
+trivial baseline on the topic-tagged subset, versus 0.528 against 0.571
+on the subset without topic data - the model does relatively *worse*
+exactly where the new feature is populated.
+
+`train_improved.py` now prints the trivial-baseline comparison and
+warns explicitly when the "best" trained config doesn't beat it, so
+this can't get silently reported as progress again by picking the top
+row of a table without a reference point.
+
+**Reading this straight:** three feature-engineering attempts now
+(ticker+scaling, class balancing, topic categories) on top of Alpha
+Vantage's overall/relevance/ticker sentiment scores, and none of them
+produce a model that beats guessing the majority class. That's
+consistent evidence the sentiment scores AV provides just don't carry
+enough signal for next-few-days direction on their own - the credible
+next lever is different information entirely (Project 1's own
+event/entity extraction, or price/volume-based features), not another
+transformation of the same three numbers.
 
 ### Known limitations, stated plainly
 

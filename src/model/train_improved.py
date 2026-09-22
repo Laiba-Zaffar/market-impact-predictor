@@ -27,6 +27,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 import joblib
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import (
@@ -102,6 +103,13 @@ def run() -> None:
     print("DIRECTION CLASSIFIER - comparing configs")
     print("=" * 60)
 
+    trivial = DummyClassifier(strategy="most_frequent")
+    trivial.fit(train_df[ALL_FEATURES], train_df["direction"])
+    trivial_pred = trivial.predict(test_df[ALL_FEATURES])
+    trivial_acc = accuracy_score(test_df["direction"], trivial_pred)
+    trivial_f1 = f1_score(test_df["direction"], trivial_pred, zero_division=0)
+    print(f"\nTrivial 'always predict majority class' baseline: accuracy={trivial_acc:.3f}  f1={trivial_f1:.3f}")
+
     baseline = Pipeline([("prep", make_preprocessor()), ("clf", LogisticRegression())])
     balanced = Pipeline(
         [("prep", make_preprocessor()), ("clf", LogisticRegression(class_weight="balanced"))]
@@ -119,6 +127,12 @@ def run() -> None:
 
     best_name, best_direction_model, best_f1 = max(results, key=lambda r: r[2])
     print(f"\nBest by F1: {best_name} (f1={best_f1:.3f})")
+    if best_f1 <= trivial_f1:
+        print(
+            f"WARNING: best trained model (f1={best_f1:.3f}) does not beat the trivial "
+            f"majority-class baseline (f1={trivial_f1:.3f}). None of these configs are "
+            f"actually predicting anything - do not report this as a working model."
+        )
 
     print("\n" + "=" * 60)
     print("MAGNITUDE REGRESSOR - comparing configs")
