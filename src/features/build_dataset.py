@@ -199,6 +199,10 @@ def build_dataset(horizon_days: int = HORIZON_DAYS, apply_event_filter: bool = T
                 "article_id": article_id,
                 "ticker": ticker,
                 "time_published": time_published,
+                # Carried through for M10 - the headline is the only
+                # feature in this project that isn't a number someone
+                # else computed.
+                "title": title,
                 "overall_sentiment_score": overall_sentiment,
                 "relevance_score": relevance,
                 "ticker_sentiment_score": ticker_sentiment,

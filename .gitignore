@@ -11,3 +11,4 @@ data/processed/
 models/*.joblib
 reports/
 
+data/processed/encodings/
