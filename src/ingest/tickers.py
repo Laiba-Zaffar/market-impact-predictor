@@ -18,3 +18,10 @@ TICKER_UNIVERSE = [
     "META", "DIS",                      # communication
     "TSLA", "GM",                       # auto
 ]
+
+# Market proxy for abnormal-return labels. Measured on this data, ~29% of
+# raw forward-return variance is market-wide rather than news-specific -
+# so a raw close-to-close label mostly asks the model to predict the
+# index from one company's headline. SPY is held in the same `prices`
+# table as any other ticker (it just never appears in a news query).
+BENCHMARK_TICKER = "SPY"

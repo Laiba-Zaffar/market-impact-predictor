@@ -5,7 +5,7 @@ import yfinance as yf
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-from src.ingest.tickers import TICKER_UNIVERSE
+from src.ingest.tickers import BENCHMARK_TICKER, TICKER_UNIVERSE
 from src.storage.db import get_connection, insert_price
 
 # One extra month of buffer past the news backfill window, so even an
@@ -24,7 +24,11 @@ def run_once() -> None:
     conn = get_connection()
     total_rows = 0
 
-    for ticker in TICKER_UNIVERSE:
+    # The benchmark is fetched alongside the universe, not separately:
+    # every abnormal-return label needs the market's move over the exact
+    # same window as the stock's, so a missing or stale benchmark series
+    # silently breaks labeling for every ticker at once.
+    for ticker in TICKER_UNIVERSE + [BENCHMARK_TICKER]:
         history = fetch_ticker_prices(ticker)
         if history.empty:
             print(f"  {ticker}: no data returned")
