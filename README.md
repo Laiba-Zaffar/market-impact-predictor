@@ -8,6 +8,21 @@ happens *after* you start running it, never what happened before.
 
 ## Highlights
 
+- **Found that three "no signal" results were partly measuring defects
+  in the label, not the features.** The target was a raw close-to-close
+  return, so ~29% of its variance was the index moving rather than news,
+  which handed the model a free lunch: 55.15% accuracy available from
+  upward drift alone. That *was* the majority-class collapse. The
+  label is now a beta-adjusted, volatility-normalized abnormal return,
+  estimated point-in-time; the base rate is 0.5075 and the free lunch is
+  gone. ([details](#m8-the-label-was-the-problem))
+- **Discovered the real sample size was ~21x smaller than the row
+  count.** Every article about one ticker resolving to one reference
+  close carries an identical label - 55,532 "examples" covered only
+  2,630 distinct labels (2,002 once no-event articles are also
+  dropped), with near-duplicates of most test labels sitting in the
+  training set. Every significance estimate before this was ~4.6x
+  (sqrt(21)) too confident.
 - **Caught a costly wrong assumption about a third-party API before it
   compounded.** Assumed Alpha Vantage's multi-ticker query was an OR
   filter; it's actually an AND ("articles mentioning ALL listed tickers
@@ -17,8 +32,9 @@ happens *after* you start running it, never what happened before.
 - **Every stage refuses to produce a misleading number on too little
   data**, rather than reporting a number that looks like a result but
   isn't one - verified on 15 examples (correctly refused to evaluate)
-  and again on 31,230 (finally produced a real, honest result: the
-  baseline doesn't beat buy-and-hold yet, see below).
+  and again at full volume, where it produced a real negative result
+  instead of a flattering one. M8 later showed that result was itself
+  measuring a defective label, which is the more interesting finding.
 - **Time-based train/test split, not random** — a random split on
   time-series financial data lets the model implicitly train on
   information from the future relative to a test example, which makes
@@ -27,21 +43,27 @@ happens *after* you start running it, never what happened before.
   numbers** — no transaction costs, hand-picked ticker universe,
   single historical period — rather than a clean-looking result someone
   has to know to distrust.
-- **22 tests, all deterministic, none needing a trained model or live
+- **43 tests, all deterministic, none needing a trained model or live
   API** — including one that caught a real bug in its own mock (a test
   double returning a Python list where the real dependency returns a
-  numpy array, which broke the code's `[:, 1]` slicing).
+  numpy array, which broke the code's `[:, 1]` slicing), and one that
+  asserts lookahead leakage *cannot* happen: two price series identical
+  up to the reference date and violently divergent after it must
+  produce an identical beta.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     AV[Alpha Vantage News\nSentiment API] -- daily cron,\nquota-aware --> Ingest[fetch_news_sentiment.py]
-    YF[yfinance] --> Prices[fetch_prices.py]
+    YF[yfinance\n21 tickers + SPY] --> Prices[fetch_prices.py]
     Ingest --> DB[(SQLite)]
     Prices --> DB
-    DB --> Labels[features/labels.py\nprice alignment]
-    Labels --> Dataset[features/build_dataset.py\ntime-based split]
+    DB --> Filter[features/events.py\ndrop no-event articles]
+    Filter --> Labels[features/labels.py\nprice alignment]
+    DB --> Adjust[features/market_adjust.py\npoint-in-time beta + vol]
+    Labels --> Dataset
+    Adjust --> Dataset[features/build_dataset.py\nabnormal label, event-level dedup,\ntime-based split]
     Dataset --> Train[model/train_baseline.py]
     Train --> Models[(models/*.joblib)]
     Models --> Calibrate[model/calibrate.py]
@@ -51,9 +73,19 @@ flowchart LR
 Two independent data sources (news+sentiment, and raw prices) feed the
 same SQLite database; `features/labels.py` is the join point that turns
 "an article about ticker X at time T" into "what actually happened to
-X's price afterward" - everything downstream (dataset construction,
-training, calibration, backtest) is standard ML pipeline shape once that
-join exists.
+X's price afterward."
+
+Three things sit between that join and the model, and each exists
+because its absence produced a misleading result (see
+[M8](#m8-the-label-was-the-problem)):
+
+- `features/events.py` drops articles containing no event - 13F
+  boilerplate, opinion listicles, post-hoc price explainers.
+- `features/market_adjust.py` strips the market's share of the move,
+  using a beta estimated only from data available at the reference
+  close, and scales by trailing volatility.
+- `build_dataset.aggregate_to_events()` collapses the many articles
+  sharing one label into the single observation they actually are.
 
 ## Quickstart
 
@@ -83,7 +115,7 @@ python -m src.run_pipeline
 python -m pytest tests/ -v
 ```
 
-22 tests, all fast (~1s total), all deterministic - no live API calls,
+43 tests, all fast (~1s total), all deterministic - no live API calls,
 no trained model required. Same philosophy as Project 1: test the logic
 you actually own directly (date/price arithmetic, the time-based split,
 the quota tracker's persistence and reset behavior, the backtest's
@@ -103,6 +135,9 @@ metrics are for.
 - [x] M5 — confidence calibration — real result: minimal improvement, consistent with M4's weak-signal finding
 - [x] M6 — backtest evaluation — real result: underperforms buy-and-hold (35.07 vs 38.06)
 - [x] M7 — portfolio polish (tests, README, this list)
+- [x] M8 — **label correctness**: abnormal returns, event-level dedup, event filter — the three negative results above were partly measuring label defects, not features ([below](#m8-the-label-was-the-problem))
+- [ ] M9 — re-point `train_improved` / `calibrate` / `backtest` at the event-level dataset (they still read the old raw-return columns)
+- [ ] M10 — own the NLP: fine-tune an encoder on headlines instead of consuming a third party's sentiment float
 
 ## Engineering notes
 
@@ -328,11 +363,143 @@ next lever is different information entirely (Project 1's own
 event/entity extraction, or price/volume-based features), not another
 transformation of the same three numbers.
 
+### M8: the label was the problem
+
+Three feature-engineering attempts had all failed to beat a
+majority-class baseline, and the conclusion drawn above was that the
+sentiment scores carry no signal. Before spending more on features, the
+next thing worth checking was whether the *target* was measuring what it
+claimed to. It wasn't, in three separate ways - all of which inflate or
+distort exactly the numbers reported in M4-M7.
+
+**1. The label was a raw return, so it was mostly the stock market.**
+
+`direction = 1 if target_close > reference_close` is a raw close-to-close
+move. Measured on this corpus, ~29% of that variance is market-wide, and
+on 43.7% of days more than 80% of the 21 tickers moved the same
+direction - one index, not 21 independent news reactions. The
+consequence is not subtle:
+
+| | P(up) |
+|---|---|
+| raw return | 0.5515 |
+| market-adjusted return | 0.5075 |
+
+The baseline's "56.5% accuracy, predicts up for everything" was the model
+correctly exploiting upward drift that had been baked into the target.
+**The majority-class collapse was a property of the label, not evidence
+about the features.** The fix is the standard event-study form: subtract
+the stock's beta-weighted share of the market's move over the same
+window, then divide by trailing volatility so a 1% move in a quiet name
+and a 1% move in a volatile one aren't scored as the same size surprise.
+
+Beta and volatility are estimated from a 120-day window that **ends at
+the reference close** - never past it. Using a full-sample beta would
+leak the future into the label, which is the same class of error the
+time-based split already guards against, just hidden one level deeper.
+`test_beta_ignores_data_after_the_reference_date` asserts this directly:
+two series identical up to the reference and violently divergent after
+it must produce an identical beta.
+
+**2. The sample was ~27x smaller than the row count.**
+
+Every article about AAPL resolving to the same reference close carries
+the *identical* label. Each label cell was reused ~21 times: the 55,532
+rows reported in M4-M7 covered only 2,630 distinct labels. (The current
+event-level dataset has 2,002 rows - the further drop is the event
+filter below, not deduplication.) Because duplicates straddle the
+train/test boundary, near-twins of most test labels sat in the training
+set - not classic lookahead leakage, but leakage, and every significance
+estimate before this was ~4.6x (sqrt(21)) too confident.
+
+Collapsing to one row per (ticker, reference_date) is the honest unit.
+The article count survives as `n_articles`, which is real information -
+a burst of coverage on one name in one day - that was previously
+expressed only as duplicated rows, where no model could use it.
+
+**3. A large share of the corpus contains no event.**
+
+A model mapping "news about X" to "X's subsequent move" assumes the
+article describes something that happened. Much of a retail feed
+doesn't:
+
+- **Ownership boilerplate** - 13F filings are public 45 days after
+  quarter end, and content mills auto-generate one article per filer per
+  holding ("GRIMES & Co WEALTH MANAGEMENT LLC Sells 3,223 Shares of
+  Alphabet Inc."). MarketBeat alone is 18.8% of the corpus.
+- **Opinion and listicles** - "Is Johnson & Johnson Still the Ultimate
+  Safe Dividend Stock to Buy?" has no event and an arbitrary timestamp.
+- **Post-hoc explainers** - "Why KLA Corporation (KLAC) Stock Is Down
+  Today" is published *because* the stock already moved. That move is
+  already inside the reference close, so these add noise to a forward
+  label rather than signal.
+
+63.6% of articles survive the filter. Writing the filter tests from
+verbatim corpus titles rather than invented ones immediately earned its
+keep: it caught a false positive where *"Enovix Shares Climb After
+Company Names Former Apple AirPods Manufacturing Leader as COO"* was
+being dropped as a post-hoc explainer despite reporting a genuine
+corporate action. Price-move headlines are now dropped only when they
+never state a cause.
+
+**What this changed, and what it didn't.**
+
+The honest answer on signal is unchanged - and now trustworthy:
+
+| feature (event-level, n=2,002) | rank IC | t |
+|---|---|---|
+| `ticker_sentiment_score_mean` | +0.0117 | 0.52 |
+| `overall_sentiment_score_mean` | +0.0357 | 1.60 |
+| `n_articles` | +0.0157 | 0.70 |
+| `topic_earnings_max` | +0.0420 | 1.88 |
+| `topic_economy_macro_max` | +0.0471 | 2.11 |
+
+That last row crosses the usual |t|>2 threshold, and is reported here
+*because* it shouldn't be believed: seven features were tested, so ~0.35
+false positives at p<0.05 are expected by chance, and one marginal hit
+out of seven is exactly what noise looks like. It would need to hold
+out-of-sample, on data it wasn't discovered in, before it counted as
+anything.
+
+The more useful finding is a power calculation. Detecting IC=0.03 at
+t=2 needs n≈4,444; this dataset has 2,002. **"No signal" and "not enough
+data to see a signal" are currently indistinguishable here** - which
+means the honest next step is more history and better features, not
+another model on the same 2,002 rows.
+
+Accuracy was also the wrong metric throughout. An IC of 0.03 corresponds
+to roughly 51.5% direction accuracy - a yardstick too coarse to resolve
+the effect being looked for, which is part of why M4-M7 could only ever
+return "no."
+
+One performance note, since it's the third instance of the same lesson:
+the abnormal-return computation depends only on
+(ticker, reference_date, target_date), but ran once per *article* row,
+each time fitting a 120-day OLS beta. Memoizing on that key took the
+build back to 14 seconds. The price-series cache, the topics query, and
+now this - same shape every time.
+
 ### Known limitations, stated plainly
 
+- **Underpowered for the effect size being looked for.** 2,002
+  event-level observations; detecting IC=0.03 at t=2 needs ~4,400. No
+  conclusion drawn here separates "no signal" from "not enough data."
+- **There is no NLP in this project yet.** Every feature is a float
+  Alpha Vantage computed - `overall_sentiment_score`,
+  `ticker_sentiment_score`, topic relevances. The modeling is
+  scikit-learn on someone else's sentiment model's output, which caps
+  how good it can get and makes the headline text itself unused. M10.
 - **Small, hand-picked ticker universe** (21 large, liquid, currently
   healthy companies across sectors) - not an unbiased trading universe;
   selecting it at all is a mild form of hindsight bias.
+- **The event filter is blunt on purpose** - title regexes plus a
+  content-mill source blocklist, not a classifier. It drops real events
+  from blocklisted publishers (an Insider Monkey article about a genuine
+  product launch goes with the rest), and `filter_stats()` reports the
+  drop rate so that cost stays visible rather than assumed.
+- **Beta is estimated against SPY alone**, not a market + sector model.
+  A sector shock still lands in the "abnormal" return for every name in
+  that sector on the same day.
 - **Daily price granularity only** - no intraday reaction captured,
   since free historical intraday data isn't available a year back.
   Meaningful for "does this news shift the multi-day trajectory," not
@@ -348,8 +515,17 @@ transformation of the same three numbers.
 - **Confidence looks roughly reasonable but hasn't been rigorously
   checked** - the Brier score barely changed with calibration (0.2460 →
   0.2459), consistent with a model that doesn't have much real signal to
-  calibrate in the first place. Worth re-checking once feature quality
-  improves, not currently a claim that confidence is trustworthy.
+  calibrate in the first place. That measurement also predates M8, so it
+  was taken against a 55/45 base rate that left little to correct;
+  it needs re-running against the abnormal-return label before it means
+  anything either way.
+- **M4-M7's reported numbers are superseded, not deleted.** They are
+  kept above as the chronological record of how the label defects were
+  found, but every accuracy/Brier/backtest figure in those sections was
+  computed on raw returns over duplicated rows. `train_improved.py`,
+  `calibrate.py` and `backtest.py` still read those old columns and have
+  not yet been re-pointed at the event-level dataset (M9), so running
+  the pipeline today reproduces the old numbers, not the M8 ones.
 - **The daily cron backfill silently never fired** - scheduled for 6am,
   but the laptop was off/asleep then, and plain `cron` doesn't catch up
   missed runs. Found via the boot log, not a smoking gun - worth moving
